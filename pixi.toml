@@ -13,6 +13,8 @@ make = "*"
 [pypi-dependencies]
 asyncpg = "*"
 httpx = "*"
+pytest = "*"
+pytest-asyncio = "*"
 
 [tasks]
 # Database lifecycle
@@ -23,3 +25,4 @@ setup = { cmd = "bash scripts/setup_db.sh && bash scripts/start_pg.sh && bash sc
 run = { cmd = "python agents.py" }
 query = { cmd = "psql -h localhost -p 5432 -U agent -d agentdb -c \"SELECT agent_id, task_id, status, COALESCE(output->>'summary', output->>'executive_briefing') as result, lineage FROM agent_memory ORDER BY created_at;\"" }
 reset = { cmd = "bash scripts/stop_pg.sh && rm -rf .pgdata && pixi run setup" }
+test = { cmd = "python -m pytest test_agents.py -v" }
