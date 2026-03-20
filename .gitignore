@@ -1,0 +1,20 @@
+# pixi
+.pixi/*
+!.pixi/config.toml
+
+# Local postgres data
+.pgdata/
+
+# pgmq source clone
+.pgmq-src/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
