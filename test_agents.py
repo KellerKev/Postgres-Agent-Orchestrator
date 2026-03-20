@@ -228,27 +228,28 @@ async def test_ollama_check():
 
 
 @pytest.mark.asyncio
-async def test_llm_call_with_mock_fallback():
-    """llm_call should return the mock if the model isn't available."""
+async def test_llm_call_returns_string():
+    """llm_call should return a non-empty string from ollama."""
     from agents import llm_call
 
-    # Use a bogus model to force fallback
-    original = os.environ.get("OLLAMA_MODEL")
-    os.environ["OLLAMA_MODEL"] = "nonexistent-model-xyz"
-
-    import agents
-    old_model = agents.OLLAMA_MODEL
-    agents.OLLAMA_MODEL = "nonexistent-model-xyz"
-
-    result = await llm_call("test prompt", "mock_response_123")
-
-    agents.OLLAMA_MODEL = old_model
-    if original:
-        os.environ["OLLAMA_MODEL"] = original
-
-    # Should either get a real response or the mock
+    result = await llm_call("Say hello in one word.")
     assert isinstance(result, str)
     assert len(result) > 0
+
+
+@pytest.mark.asyncio
+async def test_llm_call_bad_model_raises():
+    """llm_call should raise RuntimeError for a missing model."""
+    from agents import llm_call
+    import agents
+
+    old_model = agents.OLLAMA_MODEL
+    agents.OLLAMA_MODEL = "nonexistent-model-xyz-999"
+    try:
+        with pytest.raises(RuntimeError, match="not found"):
+            await llm_call("test")
+    finally:
+        agents.OLLAMA_MODEL = old_model
 
 
 # ── End-to-End Test ───────────────────────────────────────────────────────

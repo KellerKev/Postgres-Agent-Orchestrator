@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any
 
 import asyncpg
 import httpx
@@ -44,20 +43,31 @@ async def check_ollama() -> bool:
         return False
 
 
-async def llm_call(prompt: str, mock_response: str) -> str:
-    """Call ollama or fall back to mock if unavailable."""
-    try:
-        async with httpx.AsyncClient() as client:
+async def llm_call(prompt: str) -> str:
+    """Call ollama. Raises on failure — no silent fallbacks."""
+    async with httpx.AsyncClient() as client:
+        try:
             r = await client.post(
                 f"{OLLAMA_HOST}/api/generate",
                 json={"model": OLLAMA_MODEL, "prompt": f"/no_think {prompt}", "stream": False},
                 timeout=120,
             )
-            r.raise_for_status()
-            return r.json()["response"].strip()
-    except Exception as e:
-        print(f"  {YELLOW}[LLM] Falling back to mock: {e}{RESET}")
-        return mock_response
+        except httpx.ConnectError:
+            raise ConnectionError(
+                f"Cannot reach ollama at {OLLAMA_HOST}. "
+                f"Is it running? Start it with: ollama serve"
+            )
+        except httpx.TimeoutException:
+            raise TimeoutError(
+                f"Ollama request timed out after 120s. "
+                f"Model '{OLLAMA_MODEL}' may be too large for your hardware."
+            )
+        if r.status_code == 404:
+            raise RuntimeError(
+                f"Model '{OLLAMA_MODEL}' not found. Pull it with: ollama pull {OLLAMA_MODEL}"
+            )
+        r.raise_for_status()
+        return r.json()["response"].strip()
 
 
 # ── Agent 1: Fetcher ───────────────────────────────────────────────────────
@@ -91,8 +101,7 @@ async def run_fetcher() -> None:
                 f"Given these 3 Hacker News headlines about {topic}, "
                 f"write a 2-sentence factual summary:\n{headline_text}"
             )
-            mock = f"Recent discussions on {topic} cover emerging trends and technical challenges. The community shows strong interest in practical applications."
-            summary = await llm_call(prompt, mock)
+            summary = await llm_call(prompt)
 
             # Write result into agent_memory — the INSERT triggers NOTIFY for summarizer
             await conn.execute(
@@ -116,22 +125,22 @@ async def run_fetcher() -> None:
 
 async def fetch_hn_headlines(topic: str) -> list[str]:
     """Grab top 3 story titles from Hacker News Algolia API."""
-    try:
-        async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient() as client:
+        try:
             r = await client.get(
                 "https://hn.algolia.com/api/v1/search",
                 params={"query": topic, "tags": "story", "hitsPerPage": 3},
                 timeout=10,
             )
-            r.raise_for_status()
-            return [hit["title"] for hit in r.json()["hits"]]
-    except Exception as e:
-        print(f"  {YELLOW}[HN] API failed, using mock headlines: {e}{RESET}")
-        return [
-            f"{topic}: Recent Developments",
-            f"Understanding {topic} in 2025",
-            f"Why {topic} Matters Now",
-        ]
+        except httpx.ConnectError:
+            raise ConnectionError(
+                "Cannot reach Hacker News API at hn.algolia.com. Check your internet connection."
+            )
+        r.raise_for_status()
+        hits = r.json().get("hits", [])
+        if not hits:
+            raise ValueError(f"No Hacker News stories found for topic: '{topic}'")
+        return [hit["title"] for hit in hits]
 
 
 # ── Agent 2: Summarizer ───────────────────────────────────────────────────
@@ -175,8 +184,7 @@ async def _handle_wakeup(payload: str) -> None:
             "rewrite it as a one-sentence executive briefing for a "
             f"non-technical CTO:\n{fetcher_summary}"
         )
-        mock = f"Key takeaway: {fetcher_summary[:80]}"
-        briefing = await llm_call(prompt, mock)
+        briefing = await llm_call(prompt)
 
         # Store with ltree lineage — 'fetcher.summarizer' is a child of 'fetcher'
         conn = await get_connection()
@@ -204,11 +212,14 @@ async def _handle_wakeup(payload: str) -> None:
 # ── Main ───────────────────────────────────────────────────────────────────
 
 async def main() -> None:
-    # Check ollama availability upfront
-    if await check_ollama():
-        print(f"{GREEN}[INIT]{RESET} Ollama reachable at {OLLAMA_HOST}, using model {OLLAMA_MODEL}")
-    else:
-        print(f"{YELLOW}[MOCK MODE]{RESET} Ollama not reachable — using fake responses")
+    # Verify ollama is reachable before starting agents
+    if not await check_ollama():
+        print(f"{RED}[FATAL]{RESET} Cannot reach ollama at {OLLAMA_HOST}")
+        print(f"       Start it with: ollama serve")
+        print(f"       Then pull a model: ollama pull {OLLAMA_MODEL}")
+        sys.exit(1)
+
+    print(f"{GREEN}[INIT]{RESET} Ollama reachable at {OLLAMA_HOST}, using model {OLLAMA_MODEL}")
 
     # Both agents run concurrently in one process, two separate connections
     await asyncio.gather(
